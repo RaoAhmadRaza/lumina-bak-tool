@@ -1,0 +1,16 @@
+{
+  "name": "LUMINA BAK Tool",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "sqlserver",
+  "workspaceFolder": "/workspace",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "forwardPorts": [3000, 1433],
+  "postCreateCommand": "cd /workspace/web && npm install",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-mssql.mssql", "bradlc.vscode-tailwindcss"]
+    }
+  }
+}

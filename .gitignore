@@ -1,7 +1,11 @@
 node_modules/
 backups/*.Bak
 backups/*.bak
+uploads/*.Bak
+uploads/*.bak
 output/*.csv
 output/*.json
 .env
+.env.local
 .DS_Store
+web/.next/
