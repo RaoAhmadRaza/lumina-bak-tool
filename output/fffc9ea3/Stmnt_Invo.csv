@@ -1,6 +1,0 @@
-"DTId","TDate","TType","IsDeposit","Amount","PersonId","BillNo","Note","VchNo","DrAcc","CrAcc"
-"1","Mon Jan 01 1900 04:28:12 GMT+0428 (Pakistan Standard Time)","100","0","43450","81","0","Previous Balance","0","0","0"
-"2","Fri Apr 24 2026 05:00:00 GMT+0500 (Pakistan Standard Time)","2","1","18000","81","1354","Cash received, Voucher# 202604240002Cash Sale, BillNo:1354","202604240002","1","3"
-"3","Fri Apr 24 2026 05:00:00 GMT+0500 (Pakistan Standard Time)","8","0","16300","81","260424001","Sale Return# 260424001","0","16","3"
-"4","Sun Apr 26 2026 05:00:00 GMT+0500 (Pakistan Standard Time)","2","0","18430","81","1361","Sale Invoice# 1361","0","3","5"
-"5","Sun Apr 26 2026 05:00:00 GMT+0500 (Pakistan Standard Time)","2","1","25000","81","1361","Cash received, Voucher# 202604260002Cash Sale, BillNo:1361","202604260002","1","3"

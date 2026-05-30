@@ -1,11 +1,12 @@
 node_modules/
-backups/*.Bak
+**/node_modules/
 backups/*.bak
-uploads/*.Bak
+backups/*.Bak
 uploads/*.bak
-output/*.csv
-output/*.json
+uploads/*.Bak
+output/
+web/.next/
 .env
 .env.local
 .DS_Store
-web/.next/
+*.zip
