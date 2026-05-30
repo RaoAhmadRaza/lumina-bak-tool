@@ -1,21 +1,56 @@
-version: "3.8"
 services:
-  sqlserver:
+  db:
     image: mcr.microsoft.com/mssql/server:2022-latest
     platform: linux/amd64
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "Lumina@Pos123"
-    ports:
-      - "1433:1433"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_MEMORY_LIMIT_MB: "2048"
     volumes:
-      - ./uploads:/backups
       - sqldata:/var/opt/mssql
+      - ./data/backups:/backups
     healthcheck:
-      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P "Lumina@Pos123" -C -Q "SELECT 1" || exit 1
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      MSSQL_HOST: db
+      MSSQL_PORT: "1433"
+      MSSQL_USER: SA
+      MSSQL_PASSWORD: ${SA_PASSWORD}
+      BACKUPS_DIR: /backups
+      SQL_BACKUP_DIR: /backups
+      OUTPUT_DIR: /data/output
+    volumes:
+      - ./data/backups:/backups
+      - ./data/output:/data/output
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
 
 volumes:
   sqldata:
+  caddy_data:
+  caddy_config:

@@ -6,30 +6,33 @@ import sql from "mssql";
 import { v4 as uuid } from "uuid";
 import { getConfig } from "@/lib/mssql";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
+
+const BACKUPS_DIR = process.env.BACKUPS_DIR || path.join(process.cwd(), "..", "backups");
+const OUTPUT_BASE = process.env.OUTPUT_DIR || path.join(process.cwd(), "..", "output");
+const SQL_BACKUP_DIR = process.env.SQL_BACKUP_DIR || "/backups";
 
 export async function POST(req: NextRequest) {
   const jobId = uuid().slice(0, 8);
   const dbName = `restore_${jobId}`;
-  const backupsDir = path.join(process.cwd(), "..", "backups");
-  const outputDir = path.join(process.cwd(), "..", "output", jobId);
+  const outputDir = path.join(OUTPUT_BASE, jobId);
 
   try {
     const formData = await req.formData();
     const file = formData.get("bakfile") as File;
     if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
 
-    if (!existsSync(backupsDir)) await mkdir(backupsDir, { recursive: true });
+    if (!existsSync(BACKUPS_DIR)) await mkdir(BACKUPS_DIR, { recursive: true });
     await mkdir(outputDir, { recursive: true });
 
-    const bakPath = path.join(backupsDir, `${jobId}.bak`);
+    const bakPath = path.join(BACKUPS_DIR, `${jobId}.bak`);
     const bytes = await file.arrayBuffer();
     await writeFile(bakPath, Buffer.from(bytes));
 
     const masterPool = await sql.connect(getConfig("master"));
 
     const fileList = await masterPool.request().query(
-      `RESTORE FILELISTONLY FROM DISK = '/backups/${jobId}.bak'`
+      `RESTORE FILELISTONLY FROM DISK = '${SQL_BACKUP_DIR}/${jobId}.bak'`
     );
 
     const dataFile = fileList.recordset.find((r: any) => r.Type === "D");
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest) {
     }
 
     await masterPool.request().query(`
-      RESTORE DATABASE [${dbName}] FROM DISK = '/backups/${jobId}.bak'
+      RESTORE DATABASE [${dbName}] FROM DISK = '${SQL_BACKUP_DIR}/${jobId}.bak'
       WITH MOVE '${dataFile.LogicalName}' TO '/var/opt/mssql/data/${dbName}.mdf',
            MOVE '${logFile.LogicalName}' TO '/var/opt/mssql/data/${dbName}.ldf',
            REPLACE

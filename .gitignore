@@ -5,6 +5,7 @@ backups/*.Bak
 uploads/*.bak
 uploads/*.Bak
 output/
+data/
 web/.next/
 .env
 .env.local

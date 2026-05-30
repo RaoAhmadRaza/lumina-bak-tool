@@ -4,18 +4,20 @@ import { readFile, rm } from "fs/promises";
 import { execSync } from "child_process";
 import path from "path";
 
+const OUTPUT_BASE = process.env.OUTPUT_DIR || path.join(process.cwd(), "..", "output");
+
 export async function GET(req: NextRequest) {
   const jobId = req.nextUrl.searchParams.get("jobId");
   if (!jobId || !/^[a-f0-9-]+$/.test(jobId)) {
     return NextResponse.json({ error: "Invalid jobId" }, { status: 400 });
   }
 
-  const outputDir = path.join(process.cwd(), "..", "output", jobId);
+  const outputDir = path.join(OUTPUT_BASE, jobId);
   if (!existsSync(outputDir)) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
 
-  const zipPath = path.join(process.cwd(), "..", "output", `${jobId}.zip`);
+  const zipPath = path.join(OUTPUT_BASE, `${jobId}.zip`);
 
   try {
     execSync(`cd "${outputDir}" && zip -j "${zipPath}" *.csv *.json`);
