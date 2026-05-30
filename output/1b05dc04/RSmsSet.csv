@@ -1,0 +1,10 @@
+"SetId","Msg","PersonId","Identiti","Schedule","IsChecked","NextSendDate","Txt"
+"1","Jobs Entered",,"4","After each 2 Hours","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"2","Jobs Done",,"4","After each 2 Hours","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"3","Items Out",,"4","After each 2 Hours","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"4","Jobs Failed",,"4","After each 2 Hours","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"5","Repairing Profit",,"4","After each 2 Hours","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"6","Item Received",,"2","On New Job Entry","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"7","Item Repaired",,"2","On Job Done Entry","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"8","Item Out",,"2","On Item Out Entry","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
+"9","Job Failed",,"2","On Job Failed Entry","false","Sat Sep 25 2021 19:32:00 GMT+0500 (Pakistan Standard Time)",
