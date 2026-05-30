@@ -1,0 +1,7 @@
+node_modules/
+backups/*.Bak
+backups/*.bak
+output/*.csv
+output/*.json
+.env
+.DS_Store
