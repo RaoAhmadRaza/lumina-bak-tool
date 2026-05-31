@@ -4,6 +4,30 @@ import { useState, useRef, useCallback } from "react";
 type TableInfo = { name: string; rows: number; status: string; error?: string };
 type Result = { jobId: string; database: string; tables: TableInfo[]; totalTables: number; exported: number; totalRows: number };
 
+// --- mapping types (fixed) ---
+interface Warning {
+  type?: string;
+  message: string;
+  count?: number;
+  details?: unknown;
+}
+interface MappingPhaseTable {
+  target: string;
+  outputRows: number;
+  warnings?: Warning[];
+}
+interface MappingPhase {
+  name: string;
+  tables: MappingPhaseTable[];
+}
+interface MappingResultData {
+  detectedFormat: string;
+  totalOutputRows: number;
+  phases: MappingPhase[];
+  warnings?: Warning[];
+}
+// --- end mapping types ---
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<"idle" | "uploading" | "done" | "error">("idle");
@@ -11,6 +35,10 @@ export default function Home() {
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const [mapping, setMapping] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [mappingError, setMappingError] = useState("");
+  const [mappingResult, setMappingResult] = useState<MappingResultData | null>(null);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -23,6 +51,8 @@ export default function Home() {
     setStatus("uploading");
     setProgress("Uploading backup file...");
     setError("");
+    setMapping("idle");
+    setMappingResult(null);
 
     const formData = new FormData();
     formData.append("bakfile", file);
@@ -39,6 +69,26 @@ export default function Home() {
     } catch (e: any) {
       setError(e.message);
       setStatus("error");
+    }
+  };
+
+  const handleMap = async () => {
+    if (!result?.jobId) return;
+    setMapping("loading");
+    setMappingError("");
+    try {
+      const res = await fetch("/api/map", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: result.jobId, format: "both" }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Mapping failed");
+      setMappingResult(data.result);
+      setMapping("done");
+    } catch (e: any) {
+      setMappingError(e.message);
+      setMapping("error");
     }
   };
 
@@ -110,10 +160,18 @@ export default function Home() {
                   <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, fontFamily: "system-ui" }}>✅ Extraction Complete</h2>
                   <p style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>Database: {result.database}</p>
                 </div>
-                <a href={`/api/download?jobId=${result.jobId}`}
-                  style={{ padding: "10px 24px", borderRadius: 8, background: "linear-gradient(135deg, #06b6d4, #6366f1)", color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "system-ui" }}>
-                  ⬇ Download ZIP
-                </a>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {mapping !== "loading" ? (
+                    <button onClick={handleMap}
+                      style={{ padding: "10px 24px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #10b981, #059669)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "system-ui" }}>
+                      🔄 Map to LUMINA POS
+                    </button>
+                  ) : null}
+                  <a href={`/api/download?jobId=${result.jobId}`}
+                    style={{ padding: "10px 24px", borderRadius: 8, background: "linear-gradient(135deg, #06b6d4, #6366f1)", color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "system-ui" }}>
+                    ⬇ Download ZIP
+                  </a>
+                </div>
               </div>
               <div style={{ display: "flex", gap: 20 }}>
                 <div style={{ background: "#131825", borderRadius: 8, padding: "10px 16px", flex: 1, textAlign: "center" }}>
@@ -131,6 +189,63 @@ export default function Home() {
               </div>
             </div>
 
+            {/* --- Mapping Section --- */}
+            {mapping === "loading" && (
+              <div style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, padding: 20, marginBottom: 16, textAlign: "center" }}>
+                <div style={{ fontSize: 32, marginBottom: 16, animation: "spin 1s linear infinite" }}>⚙️</div>
+                <p style={{ fontSize: 14, fontFamily: "system-ui" }}>Mapping data to LUMINA POS schema...</p>
+              </div>
+            )}
+            {mapping === "error" && (
+              <div style={{ background: "#1a0d0d", border: "1px solid #7f1d1d", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                <p style={{ color: "#ef4444", fontSize: 13 }}>Mapping error: {mappingError}</p>
+              </div>
+            )}
+            {mapping === "done" && mappingResult && (
+              <div style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, padding: 20, marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 600, fontFamily: "system-ui", margin: 0 }}>✅ Mapping Complete</h3>
+                  <a href={`/api/download-mapped?jobId=${result.jobId}`}
+                    style={{ padding: "8px 18px", borderRadius: 6, background: "#10b981", color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "system-ui" }}>
+                    ⬇ Download Mapped Data
+                  </a>
+                </div>
+                <p style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
+                  Detected format: <strong style={{ color: "#22d3ee" }}>{mappingResult.detectedFormat}</strong> &nbsp;|&nbsp;
+                  Total rows mapped: <strong style={{ color: "#22d3ee" }}>{mappingResult.totalOutputRows.toLocaleString()}</strong>
+                </p>
+                {mappingResult.phases.map((phase, idx) => (
+                  <div key={idx} style={{ marginTop: 16 }}>
+                    <h4 style={{ fontSize: 14, fontWeight: 600, color: "#cbd5e1", marginBottom: 8, fontFamily: "system-ui" }}>{phase.name}</h4>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+                      {phase.tables.map(t => (
+                        <div key={t.target} style={{ background: "#131825", borderRadius: 6, padding: "8px 12px" }}>
+                          <div style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 500 }}>{t.target}</div>
+                          <div style={{ fontSize: 14, color: "#22d3ee", fontWeight: 700 }}>{t.outputRows.toLocaleString()}</div>
+                          {t.warnings?.map((w, i) => (
+                            <div key={i} style={{ fontSize: 10, color: "#f59e0b", marginTop: 4 }}>
+                              ⚠ {w.message || w}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {mappingResult.warnings?.length ? (
+                  <div style={{ marginTop: 16, background: "#1a1a0d", border: "1px solid #f59e0b33", borderRadius: 6, padding: 10 }}>
+                    <p style={{ fontSize: 12, color: "#f59e0b", fontWeight: 600 }}>Global Warnings:</p>
+                    <ul style={{ margin: "4px 0 0 18px", fontSize: 11, color: "#f59e0b" }}>
+                      {mappingResult.warnings.map((w, i) => (
+                        <li key={i}>{w.message || w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            )}
+            {/* --- end Mapping Section --- */}
+
             {/* Table list */}
             <div style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, maxHeight: 400, overflowY: "auto" }}>
               {result.tables.map((t, i) => (
@@ -143,7 +258,7 @@ export default function Home() {
             </div>
 
             {/* New extraction */}
-            <button onClick={() => { setStatus("idle"); setFile(null); setResult(null); }}
+            <button onClick={() => { setStatus("idle"); setFile(null); setResult(null); setMapping("idle"); setMappingResult(null); }}
               style={{ marginTop: 16, padding: "8px 16px", borderRadius: 6, border: "1px solid #1e293b", background: "#131825", color: "#94a3b8", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
               ← New Extraction
             </button>
