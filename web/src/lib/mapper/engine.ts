@@ -13,7 +13,7 @@ import type {
 import { readExtractedCsv } from './csv-reader';
 import { writeMappedCsv, writeMappedJson, writeMigrationSQL } from './csv-writer';
 import { createIdMap, generateUUID, registerMapping, lookupId, serializeIdMap } from './id-map';
-import { normalizeBrand, deduplicateBrands, slugify } from './transforms';
+import { normalizeBrand, deduplicateBrands, slugify, toDecimal } from './transforms';
 
 /**
  * Run the full mapping process for a given config.
@@ -30,9 +30,6 @@ export async function runMapping(
   const tenantId = options.tenantId || generateUUID();
   const format = options.format || 'both';
   const idMap = createIdMap();
-
-  // Create the branch first — we need branchId for context
-  // It will be populated during Phase 1
   const branchId = generateUUID();
 
   const context: MappingContext = {
@@ -55,7 +52,6 @@ export async function runMapping(
     outputDir: `${outputDir}/${jobId}/lumina`,
   };
 
-  // Collect all SQL data for final output
   const sqlData: { tableName: string; rows: Record<string, unknown>[]; phase: string }[] = [];
 
   // ─── Execute each phase in order ───
@@ -66,7 +62,14 @@ export async function runMapping(
     };
 
     for (const tableMapping of phase.tables) {
-      const tableResult = processTable(tableMapping, outputDir, jobId, context, format, sqlData, phase.name);
+      let tableResult: TableMappingResult;
+
+      // Special handler for stock_balance computation
+      if (tableMapping.sourceTable === '_STOCK_COMPUTE_') {
+        tableResult = computeStockBalance(outputDir, jobId, context, format, sqlData, phase.name);
+      } else {
+        tableResult = processTable(tableMapping, outputDir, jobId, context, format, sqlData, phase.name);
+      }
 
       phaseResult.tables.push(tableResult);
       result.totalInputRows += tableResult.inputRows;
@@ -93,7 +96,7 @@ export async function runMapping(
 }
 
 /**
- * Process a single table mapping: read source CSV → apply transforms → write output.
+ * Process a single table mapping.
  */
 function processTable(
   mapping: TableMapping,
@@ -122,20 +125,17 @@ function processTable(
     return {
       sourceTable: mapping.sourceTable,
       targetTable: mapping.targetTable,
-      inputRows: 0,
-      outputRows: 0,
-      skippedRows: 0,
-      warnings,
+      inputRows: 0, outputRows: 0, skippedRows: 0, warnings,
     };
   }
 
-  // ─── Apply filter if defined ───
+  // ─── Apply filter ───
   let filteredRows = sourceRows;
   if (mapping.filter) {
     filteredRows = sourceRows.filter(mapping.filter);
   }
 
-  // ─── Apply preProcess if defined ───
+  // ─── Apply preProcess ───
   if (mapping.preProcess) {
     filteredRows = mapping.preProcess(filteredRows);
   }
@@ -143,22 +143,39 @@ function processTable(
   // ─── Map each row ───
   const mappedRows: Record<string, unknown>[] = [];
   let skippedRows = 0;
+  let orphanCount = 0;
 
   for (const sourceRow of filteredRows) {
     try {
       const mappedRow = mapRow(sourceRow, mapping, context);
       if (mappedRow) {
+        // Check for null FK references (orphaned rows)
+        const hasNullFk = Object.entries(mappedRow).some(
+          ([key, val]) => (key.endsWith('_id') && key !== 'tenant_id' && key !== 'branch_id' && val === null)
+        );
+        if (hasNullFk) orphanCount++;
+
         mappedRows.push(mappedRow);
       } else {
         skippedRows++;
       }
     } catch (err) {
       skippedRows++;
-      warnings.push({
-        type: 'ROW_ERROR',
-        message: `Error mapping row in ${mapping.sourceTable}: ${(err as Error).message}`,
-      });
+      if (skippedRows <= 3) {
+        warnings.push({
+          type: 'ROW_ERROR',
+          message: `Error mapping row in ${mapping.sourceTable}: ${(err as Error).message}`,
+        });
+      }
     }
+  }
+
+  if (orphanCount > 0) {
+    warnings.push({
+      type: 'ORPHANED_FK',
+      message: `${orphanCount} rows in ${mapping.targetTable} have null FK references (source ID not found in parent table)`,
+      count: orphanCount,
+    });
   }
 
   // ─── Write output ───
@@ -180,7 +197,7 @@ function processTable(
 }
 
 /**
- * Special handler for brands — deduplicate from M_Items.Brand column.
+ * Special handler for brands deduplication.
  */
 function processBrandsSpecial(
   mapping: TableMapping,
@@ -192,30 +209,22 @@ function processBrandsSpecial(
   phaseName: string
 ): TableMappingResult {
   const warnings: MappingWarning[] = [];
-
   const sourceRows = readExtractedCsv(outputDir, jobId, mapping.sourceTable);
+
   if (!sourceRows) {
     warnings.push({ type: 'MISSING_SOURCE', message: 'M_Items.csv not found for brand extraction' });
-    return {
-      sourceTable: 'M_Items', targetTable: 'brands',
-      inputRows: 0, outputRows: 0, skippedRows: 0, warnings,
-    };
+    return { sourceTable: 'M_Items', targetTable: 'brands', inputRows: 0, outputRows: 0, skippedRows: 0, warnings };
   }
 
-  // Extract and deduplicate brands
   const rawBrands = sourceRows.map((r) => r['Brand']).filter(Boolean);
   const deduplicated = deduplicateBrands(rawBrands);
-
-  // Track typos/fixes for warnings
   const typoFixes: string[] = [];
 
   const mappedRows: Record<string, unknown>[] = [];
   for (const brand of deduplicated) {
     const uuid = generateUUID();
-    // Register in idMap: normalized name → UUID
     registerMapping(context.idMap, 'brands', brand.normalized, uuid);
 
-    // Also register all original variants → same UUID
     for (const orig of brand.originals) {
       const normOrig = normalizeBrand(orig);
       if (normOrig !== orig.trim()) {
@@ -242,7 +251,6 @@ function processBrandsSpecial(
     });
   }
 
-  // Write output
   if (format === 'csv' || format === 'both') {
     writeMappedCsv(outputDir, jobId, 'brands', mappedRows);
   }
@@ -251,11 +259,130 @@ function processBrandsSpecial(
   }
 
   return {
-    sourceTable: 'M_Items',
-    targetTable: 'brands',
-    inputRows: rawBrands.length,
+    sourceTable: 'M_Items', targetTable: 'brands',
+    inputRows: rawBrands.length, outputRows: mappedRows.length,
+    skippedRows: 0, warnings,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// STOCK BALANCE COMPUTATION (Phase 5 — multi-source)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Compute stock_balance from M_SupBill (purchases) and M_CusBill (sales).
+ * For each product: qty_on_hand = total_purchased - total_sold
+ *                   avg_cost = weighted average from purchases
+ */
+function computeStockBalance(
+  outputDir: string,
+  jobId: string,
+  context: MappingContext,
+  format: string,
+  sqlData: { tableName: string; rows: Record<string, unknown>[]; phase: string }[],
+  phaseName: string
+): TableMappingResult {
+  const warnings: MappingWarning[] = [];
+
+  // Read purchase line items
+  const supBillRows = readExtractedCsv(outputDir, jobId, 'M_SupBill');
+  // Read sale line items
+  const cusBillRows = readExtractedCsv(outputDir, jobId, 'M_CusBill');
+
+  if (!supBillRows && !cusBillRows) {
+    warnings.push({ type: 'MISSING_SOURCE', message: 'Neither M_SupBill nor M_CusBill found — cannot compute stock' });
+    return { sourceTable: 'M_SupBill+M_CusBill', targetTable: 'stock_balance', inputRows: 0, outputRows: 0, skippedRows: 0, warnings };
+  }
+
+  // Aggregate purchased quantities and costs per ItemId
+  const stockMap = new Map<string, { purchased: number; sold: number; totalCost: number }>();
+
+  if (supBillRows) {
+    for (const row of supBillRows) {
+      const itemId = row['ItemId'];
+      if (!itemId) continue;
+      const qty = toDecimal(row['Qty'], 0);
+      const cost = toDecimal(row['CostPrice'], 0);
+      const ret = toDecimal(row['PurchReturn'], 0);
+
+      if (!stockMap.has(itemId)) stockMap.set(itemId, { purchased: 0, sold: 0, totalCost: 0 });
+      const entry = stockMap.get(itemId)!;
+      entry.purchased += qty - ret;
+      entry.totalCost += cost * (qty - ret);
+    }
+  }
+
+  if (cusBillRows) {
+    for (const row of cusBillRows) {
+      const itemId = row['ItemId'];
+      if (!itemId) continue;
+      const qty = toDecimal(row['Qty'], 0);
+      const saleRet = toDecimal(row['SaleReturn'], 0);
+
+      if (!stockMap.has(itemId)) stockMap.set(itemId, { purchased: 0, sold: 0, totalCost: 0 });
+      const entry = stockMap.get(itemId)!;
+      entry.sold += qty - saleRet;
+    }
+  }
+
+  // Get the first branch UUID
+  const firstBranch = context.idMap.branches.values().next().value || context.branchId;
+
+  // Build output rows
+  const mappedRows: Record<string, unknown>[] = [];
+  let skippedItems = 0;
+
+  for (const [itemId, data] of stockMap) {
+    const productUuid = lookupId(context.idMap, 'products', itemId);
+    if (!productUuid) {
+      skippedItems++;
+      continue;
+    }
+
+    const qtyOnHand = data.purchased - data.sold;
+    const avgCost = data.purchased > 0 ? data.totalCost / data.purchased : 0;
+
+    mappedRows.push({
+      id: generateUUID(),
+      tenant_id: context.tenantId,
+      product_id: productUuid,
+      branch_id: firstBranch,
+      qty_on_hand: qtyOnHand.toFixed(4),
+      avg_cost: avgCost.toFixed(4),
+    });
+  }
+
+  if (skippedItems > 0) {
+    warnings.push({
+      type: 'ORPHANED_STOCK_ITEMS',
+      message: `${skippedItems} ItemIds in purchase/sale data not found in products — skipped`,
+      count: skippedItems,
+    });
+  }
+
+  const negativeStock = mappedRows.filter((r) => toDecimal(r['qty_on_hand'] as string, 0) < 0).length;
+  if (negativeStock > 0) {
+    warnings.push({
+      type: 'NEGATIVE_STOCK',
+      message: `${negativeStock} products have negative stock (sold more than purchased in this dataset)`,
+      count: negativeStock,
+    });
+  }
+
+  if (format === 'csv' || format === 'both') {
+    writeMappedCsv(outputDir, jobId, 'stock_balance', mappedRows);
+  }
+  if (format === 'sql' || format === 'both') {
+    sqlData.push({ tableName: 'stock_balance', rows: mappedRows, phase: phaseName });
+  }
+
+  const totalInput = (supBillRows?.length || 0) + (cusBillRows?.length || 0);
+  return {
+    sourceTable: 'M_SupBill+M_CusBill',
+    targetTable: 'stock_balance',
+    inputRows: totalInput,
     outputRows: mappedRows.length,
-    skippedRows: 0,
+    skippedRows: skippedItems,
     warnings,
   };
 }
@@ -271,13 +398,11 @@ function mapRow(
   const result: Record<string, unknown> = {};
 
   for (const col of mapping.columns) {
-    // Get source value
     let sourceVal = '';
     if (col.source) {
       sourceVal = sourceRow[col.source] || '';
     }
 
-    // Apply transform or default
     let mappedVal: unknown;
     if (col.transform) {
       mappedVal = col.transform(sourceVal, sourceRow, context);
@@ -287,7 +412,6 @@ function mapRow(
       mappedVal = col.default ?? null;
     }
 
-    // If skip is set and value is empty/null, don't include
     if (col.skip && (mappedVal === null || mappedVal === undefined || mappedVal === '')) {
       continue;
     }
