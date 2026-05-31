@@ -278,12 +278,12 @@ The build should complete without errors. The `next.config.ts` already has `igno
 # From your Mac, test against the live site
 # First upload a .bak and get the jobId, then:
 
-curl -u admin:mora -X POST https://luminapos.me/api/map \
+curl -X POST https://luminapos.me/api/map \
   -H "Content-Type: application/json" \
   -d '{"jobId": "YOUR_JOB_ID", "format": "both"}'
 
 # Download mapped output
-curl -u admin:mora -o lumina-mapped.zip \
+curl -o lumina-mapped.zip \
   "https://luminapos.me/api/download-mapped?jobId=YOUR_JOB_ID"
 ```
 
