@@ -13,7 +13,7 @@ import type {
 import { readExtractedCsv } from './csv-reader';
 import { writeMappedCsv, writeMappedJson, writeMigrationSQL } from './csv-writer';
 import { createIdMap, generateUUID, registerMapping, lookupId, serializeIdMap } from './id-map';
-import { normalizeBrand, deduplicateBrands, slugify, toDecimal } from './transforms';
+import { normalizeBrand, normalizeCategory, deduplicateBrands, slugify, toDecimal } from './transforms';
 
 /**
  * Run the full mapping process for a given config.
@@ -112,6 +112,14 @@ function processTable(
   // ─── Handle special "brands" deduplication ───
   if (mapping.targetTable === 'brands' && mapping.preProcess) {
     return processBrandsSpecial(mapping, outputDir, jobId, context, format, sqlData, phaseName);
+  }
+
+  // ─── Handle special "categories" derivation from ItemName ───
+  // When M_ItemCat is degenerate (1 row = "Not Specified"), derive real
+  // categories from M_Items.ItemName instead. Falls through to normal
+  // processTable path if M_ItemCat has >1 meaningful row.
+  if (mapping.targetTable === 'categories' && isCategoryTableDegenerate(outputDir, jobId)) {
+    return processCategoriesFromItems(outputDir, jobId, context, format, sqlData, phaseName);
   }
 
   // ─── Read source CSV ───
@@ -262,6 +270,129 @@ function processBrandsSpecial(
     sourceTable: 'M_Items', targetTable: 'brands',
     inputRows: rawBrands.length, outputRows: mappedRows.length,
     skippedRows: 0, warnings,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CATEGORY DERIVATION FROM ITEM NAMES
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Check whether M_ItemCat.csv is degenerate (useless as a category source).
+ *
+ * Returns true (= derive from ItemName instead) when:
+ *   - M_ItemCat.csv doesn't exist
+ *   - It has 0 rows
+ *   - It has exactly 1 row whose CatName is "Not Specified" or empty
+ *
+ * Returns false (= use M_ItemCat normally via processTable) when it
+ * has >1 row or a single row with a meaningful name.
+ */
+function isCategoryTableDegenerate(outputDir: string, jobId: string): boolean {
+  const rows = readExtractedCsv(outputDir, jobId, 'M_ItemCat');
+  if (!rows || rows.length === 0) return true;
+  if (rows.length > 1) return false;
+
+  // Single row — degenerate only if it's the placeholder
+  const name = (rows[0]['CatName'] || '').trim().toLowerCase();
+  return name === 'not specified' || name === '';
+}
+
+/**
+ * Derive categories from M_Items.ItemName when M_ItemCat is degenerate.
+ * Structural sibling of processBrandsSpecial() — same pattern:
+ *   1. Read M_Items.csv
+ *   2. Extract + normalize + deduplicate ItemName values
+ *   3. Generate UUID per unique category, register in idMap
+ *   4. Write categories.csv
+ */
+function processCategoriesFromItems(
+  outputDir: string,
+  jobId: string,
+  context: MappingContext,
+  format: string,
+  sqlData: { tableName: string; rows: Record<string, unknown>[]; phase: string }[],
+  phaseName: string,
+): TableMappingResult {
+  const warnings: MappingWarning[] = [];
+
+  const sourceRows = readExtractedCsv(outputDir, jobId, 'M_Items');
+  if (!sourceRows) {
+    warnings.push({ type: 'MISSING_SOURCE', message: 'M_Items.csv not found — cannot derive categories from ItemName' });
+    return { sourceTable: 'M_Items (ItemName)', targetTable: 'categories', inputRows: 0, outputRows: 0, skippedRows: 0, warnings };
+  }
+
+  // ── Collect unique canonical category names ──
+  const seen = new Set<string>();
+  const canonicalNames: string[] = [];
+  const aliasFixes: string[] = [];
+
+  for (const row of sourceRows) {
+    const raw = (row['ItemName'] || '').trim();
+    if (!raw) continue;
+
+    const canonical = normalizeCategory(raw);
+
+    // Track alias/normalization fixes for the migration report
+    const key = raw.replace(/\s+/g, ' ').toLowerCase();
+    if (key !== canonical.toLowerCase()) {
+      const fix = `${raw}→${canonical}`;
+      if (!aliasFixes.includes(fix)) aliasFixes.push(fix);
+    }
+
+    if (!seen.has(canonical)) {
+      seen.add(canonical);
+      canonicalNames.push(canonical);
+    }
+  }
+
+  // Sort alphabetically for deterministic, scannable output
+  canonicalNames.sort();
+
+  // ── Generate rows + register in idMap ──
+  const mappedRows: Record<string, unknown>[] = [];
+
+  for (let i = 0; i < canonicalNames.length; i++) {
+    const name = canonicalNames[i];
+    const uuid = generateUUID();
+    registerMapping(context.idMap, 'categories', name, uuid);
+
+    mappedRows.push({
+      id: uuid,
+      tenant_id: context.tenantId,
+      name,
+      slug: slugify(name),
+      is_active: true,
+      sort_order: i,
+      created_at: context.migrationTimestamp,
+    });
+  }
+
+  // ── Warnings ──
+  if (aliasFixes.length > 0) {
+    warnings.push({
+      type: 'CATEGORY_ALIAS_APPLIED',
+      message: `${aliasFixes.length} ItemName variants mapped to canonical categories`,
+      count: aliasFixes.length,
+      details: aliasFixes.slice(0, 30).join(', '),
+    });
+  }
+
+  // ── Write output ──
+  if (format === 'csv' || format === 'both') {
+    writeMappedCsv(outputDir, jobId, 'categories', mappedRows);
+  }
+  if (format === 'sql' || format === 'both') {
+    sqlData.push({ tableName: 'categories', rows: mappedRows, phase: phaseName });
+  }
+
+  return {
+    sourceTable: 'M_Items (ItemName)',
+    targetTable: 'categories',
+    inputRows: sourceRows.length,
+    outputRows: mappedRows.length,
+    skippedRows: 0,
+    warnings,
   };
 }
 

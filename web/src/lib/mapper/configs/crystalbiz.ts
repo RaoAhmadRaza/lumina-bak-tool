@@ -8,6 +8,7 @@
 import type { MappingConfig, CsvRow, MappingContext } from '../types';
 import {
   normalizeBrand,
+  normalizeCategory,
   deduplicateBrands,
   slugify,
   parseCrystalBizDate,
@@ -17,6 +18,7 @@ import {
   toMoney,
   derivePaymentStatus,
   buildProductDescription,
+  buildProductName,
 } from '../transforms';
 import { generateUUID, registerMapping, lookupId, registerPerson, resolvePersonId } from '../id-map';
 
@@ -49,6 +51,10 @@ export const crystalBizConfig: MappingConfig = {
       tables: [
 
         // ─── categories (from M_ItemCat) ───
+        // NOTE: When M_ItemCat is degenerate (single "Not Specified" row),
+        // engine.ts intercepts this and calls processCategoriesFromItems()
+        // instead, deriving real categories from M_Items.ItemName.
+        // This config is only used when M_ItemCat has real data.
         {
           sourceTable: 'M_ItemCat',
           targetTable: 'categories',
@@ -115,12 +121,15 @@ export const crystalBizConfig: MappingConfig = {
       tables: [
 
         // ─── products (from M_Items) ───
+        // CHANGED: name enriched, category_id from ItemName, price swap,
+        //          retail_price removed, cost_price NOT NULL, tax_rate 5,2
         {
           sourceTable: 'M_Items',
           targetTable: 'products',
           idSourceColumn: 'ItemId',
           idMapKey: 'products',
           columns: [
+            // ── Identity ──
             { source: 'ItemId', target: 'id', transform: (val, _row, ctx) => {
               const uuid = generateUUID();
               registerMapping(ctx.idMap, 'products', val, uuid);
@@ -129,34 +138,66 @@ export const crystalBizConfig: MappingConfig = {
             { source: null, target: 'tenant_id', transform: (_v, _r, ctx) => ctx.tenantId },
             { source: 'ItemId', target: 'sku' },
             { source: 'ItemId', target: 'barcode' },
-            { source: 'ItemName', target: 'name', transform: (val) => (val || '').trim() },
+
+            // ── Name (ENRICHED): "{CategoryName} — {Brand} {Model}" ──
+            { source: 'ItemName', target: 'name', transform: (val, row) => {
+              const categoryName = normalizeCategory(val);
+              const brand = normalizeBrand(row['Brand'] || '');
+              return buildProductName(row, categoryName, brand);
+            }},
+
+            // ── Description (unchanged) ──
             { source: 'Model', target: 'description', transform: (_val, row) => buildProductDescription(row) },
+
+            // ── Foreign Keys ──
             { source: 'Brand', target: 'brand_id', transform: (val, _row, ctx) => {
               const normalized = normalizeBrand(val);
               return lookupId(ctx.idMap, 'brands', normalized) || null;
             }},
-            { source: 'CatId', target: 'category_id', transform: (val, _row, ctx) => {
-              return lookupId(ctx.idMap, 'categories', toInt(val)) || null;
+            // CHANGED: category_id resolved by normalizeCategory(ItemName),
+            // with CatId fallback for the non-degenerate M_ItemCat path.
+            { source: 'ItemName', target: 'category_id', transform: (val, row, ctx) => {
+              // Primary: lookup by canonical category name (degenerate path)
+              const byName = lookupId(ctx.idMap, 'categories', normalizeCategory(val));
+              if (byName) return byName;
+              // Fallback: lookup by CatId integer (non-degenerate path)
+              return lookupId(ctx.idMap, 'categories', toInt(row['CatId'])) || null;
             }},
-            { source: 'FxSalePrice', target: 'selling_price', transform: (val) => {
+
+            // ── Prices ──
+            // SWAP: RetailPrice → selling_price (customer-facing, higher)
+            //       FxSalePrice → wholesale_price (dealer price, lower)
+            //       retail_price REMOVED (not in schema)
+            { source: 'RetailPrice', target: 'selling_price', transform: (val) => {
               const num = toDecimal(val, 0);
-              return num > 0 ? num.toFixed(4) : null;
+              return num > 0 ? num.toFixed(4) : '0.0000';
             }},
-            { source: 'RetailPrice', target: 'retail_price', transform: (val) => {
-              const num = toDecimal(val, 0);
-              return num > 0 ? num.toFixed(4) : null;
-            }},
-            { source: null, target: 'cost_price', default: null },
+            { source: null, target: 'cost_price', default: '0.0000' },
             { source: null, target: 'min_selling_price', default: null },
+            { source: 'FxSalePrice', target: 'wholesale_price', transform: (val) => {
+              const num = toDecimal(val, 0);
+              return num > 0 ? num.toFixed(4) : null;
+            }},
+
+            // ── Units / Tax ──
             { source: 'Unt', target: 'unit_of_measure', transform: (val) => {
               const u = (val || 'Pc').trim().toUpperCase();
               return u === 'PC' ? 'PCS' : u;
             }},
+            { source: null, target: 'tax_rate', default: '0.00' },
+
+            // ── Stock thresholds ──
+            { source: 'QtyBelow', target: 'reorder_point', transform: (val) => {
+              const n = toInt(val, 0);
+              return n >= 0 ? n : 0;
+            }},
+
+            // ── Status / Type ──
             { source: null, target: 'is_active', default: true },
             { source: null, target: 'status', default: 'ACTIVE' },
             { source: null, target: 'type', default: 'STANDARD' },
-            { source: null, target: 'tax_rate', default: '0.0000' },
-            { source: null, target: 'reorder_point', default: 10 },
+
+            // ── Timestamp ──
             { source: null, target: 'created_at', transform: (_v, _r, ctx) => ctx.migrationTimestamp },
           ],
         },

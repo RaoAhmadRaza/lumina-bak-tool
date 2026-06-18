@@ -49,7 +49,7 @@ export interface MappingPhase {
 /** ID mapping storage: sourceTable → { sourceId → luminaUUID } */
 export interface IdMap {
   brands: Map<string, string>;
-  categories: Map<number, string>;
+  categories: Map<string | number, string>;   // string key = canonical name (derived), number key = CatId (M_ItemCat)
   products: Map<string, string>;
   customers: Map<number, string>;
   suppliers: Map<number, string>;

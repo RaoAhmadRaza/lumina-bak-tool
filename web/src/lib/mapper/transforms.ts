@@ -127,6 +127,88 @@ export function deduplicateBrands(rawBrands: string[]): { normalized: string; or
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// CATEGORY NORMALIZATION
+// ═══════════════════════════════════════════════════════════════════════
+// Same pattern as BRAND_FIXES: maps lowercased raw M_Items.ItemName
+// values to canonical category display names. Covers all 56 distinct
+// ItemName values observed across CrystalBiz mobile-parts datasets.
+// Unknown values fall through as title-cased originals — no "Not
+// Specified" bucket.
+
+const CATEGORY_ALIASES: Record<string, string> = {
+  // ── Display / Screen ──
+  'lcd unit':             'LCD Unit',
+  'lcd':                  'LCD Unit',
+  'lcd kada':             'LCD Assembly',
+  'lcd jack':             'LCD Connector',
+  'lcd flex':             'LCD Flex',
+  'led unit':             'LED Unit',
+  'tab unit':             'Tablet LCD',
+  'tab lcd':              'Tablet LCD',
+  'touch':                'Touch Digitizer',
+  'oca glass':            'OCA Glass',
+  'lite paper':           'Screen Protector',
+  // ── LCD Quality Grades ──
+  'incel':                'Incell LCD',
+  'ic fresh':             'Incell LCD',
+  'ic shad':              'Incell LCD',
+  'org fresh':            'Original LCD',
+  'org shad':             'Original LCD',
+  'org':                  'Original LCD',
+  // ── Body / Frame ──
+  'back':                 'Back Cover',
+  'body':                 'Phone Body',
+  'mid back':             'Mid Frame',
+  'mid':                  'Mid Frame',
+  // ── Power ──
+  'battery':              'Battery',
+  'battery jack':         'Battery Connector',
+  'charging pot':         'Charging Port',
+  'charging flex':        'Charging Flex',
+  'charging base':        'Charging Board',
+  'on/off':               'Power Button',
+  // ── Camera ──
+  'camera lens':          'Camera Lens',
+  'front camera':         'Front Camera',
+  'back camera':          'Rear Camera',
+  'popup camera moter':   'Pop-up Camera Motor',
+  // ── Buttons / Sensors ──
+  'finger print':         'Fingerprint Sensor',
+  'finger flex':          'Fingerprint Flex',
+  'side key':             'Side Key',
+  'volume':               'Volume Flex',
+  // ── Audio ──
+  'ringer module':        'Ringer Module',
+  'jali':                 'Speaker Mesh',
+  'front speaker flex':   'Earpiece Flex',
+  'handfree flex':        'Headphone Flex',
+  // ── Board / Internal ──
+  'board flex':           'Board Flex',
+  'sim tray':             'SIM Tray',
+  // ── Misc ──
+  'parts/tool':           'Parts & Tools',
+  'repairing':            'Repair Service',
+  'service':              'Repair Service',
+};
+
+/**
+ * Normalize a raw M_Items.ItemName value to a canonical category name.
+ *
+ * 1. trim + collapse whitespace + lowercase  →  lookup key
+ * 2. If key exists in CATEGORY_ALIASES       →  return canonical name
+ * 3. Otherwise                               →  return title-cased original
+ *
+ * The returned string is used as both:
+ *   - The `name` field in categories.csv
+ *   - The idMap lookup key for category_id FK resolution
+ */
+export function normalizeCategory(raw: string): string {
+  const key = raw.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!key) return 'Uncategorized';
+  return CATEGORY_ALIASES[key] || toTitleCase(key);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // SLUG / TEXT HELPERS
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -233,11 +315,54 @@ export function buildProductDescription(row: CsvRow): string {
   return parts.join('. ') || '';
 }
 
-/** Derive product name combining ItemName + Model for a useful display name */
-export function buildProductName(row: CsvRow): string {
-  const name = (row['ItemName'] || '').trim();
-  const brand = normalizeBrand(row['Brand'] || '');
-  const model = (row['Model'] || '').trim();
-  if (model) return `${name} - ${brand} ${model}`;
-  return name;
+/**
+ * Compose an enriched product display name:
+ *   "{CategoryName} — {Brand} {Model}"
+ *
+ * Examples:
+ *   ("Back Cover", "Apple", row.Model="11 BLACK")   → "Back Cover — Apple 11 BLACK"
+ *   ("Battery", "Nokia", row.Model="Nokia 1.4 K…")  → "Battery — Nokia 1.4 K…"
+ *   ("Incell LCD", "Apple", row.Model="0")           → "Incell LCD — Apple"
+ *   ("Repair Service", "", row.Model="")             → "Repair Service"
+ *
+ * Edge cases:
+ *   - Model is "0" or empty → omitted
+ *   - Model starts with brand name → brand prefix stripped to avoid "Nokia Nokia 1.4…"
+ *   - Brand empty → "{Category} — {Model}" or just "{Category}"
+ */
+export function buildProductName(
+  row: CsvRow,
+  categoryName: string,
+  normalizedBrand: string,
+): string {
+  const rawModel = (row['Model'] || '').trim();
+  const modelIsEmpty = !rawModel || rawModel === '0';
+
+  // Strip leading brand name from model to avoid "Nokia Nokia 1.4 K Logo"
+  let cleanModel = rawModel;
+  if (!modelIsEmpty && normalizedBrand) {
+    const brandLower = normalizedBrand.toLowerCase();
+    const modelLower = cleanModel.toLowerCase();
+    if (modelLower.startsWith(brandLower + ' ')) {
+      cleanModel = cleanModel.substring(normalizedBrand.length).trim();
+    } else if (modelLower === brandLower) {
+      // Model IS just the brand name — treat as empty
+      cleanModel = '';
+    }
+  }
+
+  const hasBrand = !!normalizedBrand && normalizedBrand !== 'Unknown';
+  const hasModel = !!cleanModel && cleanModel !== '0';
+
+  // Build the right-hand side of the em dash
+  let suffix = '';
+  if (hasBrand && hasModel) {
+    suffix = `${normalizedBrand} ${cleanModel}`;
+  } else if (hasBrand) {
+    suffix = normalizedBrand;
+  } else if (hasModel) {
+    suffix = cleanModel;
+  }
+
+  return suffix ? `${categoryName} — ${suffix}` : categoryName;
 }
